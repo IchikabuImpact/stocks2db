@@ -1,0 +1,12 @@
+{
+  "db": {
+    "host": "127.0.0.1",
+    "port": 3306,
+    "name": "stocks2db",
+    "user": "stocksapp",
+    "password": "331155"
+  },
+  "priceApi": {
+    "baseUrl": "http://127.0.0.1:8085"
+  }
+}

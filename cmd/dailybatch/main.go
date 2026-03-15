@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	"time"
 
@@ -44,33 +46,56 @@ func main() {
 		os.Exit(0)
 	}
 
-	tradeDate := time.Now().Local().Truncate(24 * time.Hour)
-	fetcher := fetcher.NewPriceAPIFetcher(cfg.PriceAPI.BaseURL)
+	now := time.Now().In(time.Local)
+	tradeDate := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+	priceFetcher := fetcher.NewPriceAPIFetcher(cfg.PriceAPI.BaseURL)
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 
 	successCount := 0
 	failureCount := 0
 
-	for _, code := range codes {
-		price, err := fetcher.FetchCurrentPrice(ctx, code)
+	for i, code := range codes {
+		log.Printf("[INFO] stock_code=%s start", code)
+
+		price, err := priceFetcher.FetchCurrentPrice(ctx, code)
 		if err != nil {
 			failureCount++
-			log.Printf("[ERROR] stock_code=%s failed to fetch price: %v", code, err)
-			continue
+			var fetchErr *fetcher.FetchError
+			if errors.As(err, &fetchErr) {
+				switch fetchErr.Kind {
+				case fetcher.FetchErrorAPI:
+					log.Printf("[ERROR] stock_code=%s api_fetch_failed err=%v", code, err)
+				case fetcher.FetchErrorParse:
+					log.Printf("[ERROR] stock_code=%s current_price_parse_failed err=%v", code, err)
+				default:
+					log.Printf("[ERROR] stock_code=%s fetch_failed err=%v", code, err)
+				}
+			} else {
+				log.Printf("[ERROR] stock_code=%s fetch_failed err=%v", code, err)
+			}
+		} else {
+			log.Printf("[INFO] stock_code=%s api_fetch_success price=%.2f", code, price)
+
+			if err := priceRepo.Upsert(ctx, tradeDate, code, price); err != nil {
+				failureCount++
+				log.Printf("[ERROR] stock_code=%s db_save_failed err=%v", code, err)
+			} else {
+				successCount++
+				log.Printf("[INFO] stock_code=%s db_save_success trade_date=%s price=%.2f", code, tradeDate.Format("2006-01-02"), price)
+			}
 		}
 
-		if err := priceRepo.Upsert(ctx, tradeDate, code, price); err != nil {
-			failureCount++
-			log.Printf("[ERROR] stock_code=%s failed to save price: %v", code, err)
-			continue
+		if i < len(codes)-1 {
+			sleepMillis := 1000 + rng.Intn(1001)
+			sleepDuration := time.Duration(sleepMillis) * time.Millisecond
+			log.Printf("[INFO] stock_code=%s sleep_before_next=%s", code, sleepDuration)
+			time.Sleep(sleepDuration)
 		}
-
-		successCount++
-		log.Printf("[INFO] stock_code=%s trade_date=%s price=%.2f saved", code, tradeDate.Format("2006-01-02"), price)
 	}
 
 	fmt.Printf("[SUMMARY] total=%d success=%d failure=%d\n", len(codes), successCount, failureCount)
 
-	if successCount == 0 && failureCount > 0 {
+	if failureCount > 0 {
 		os.Exit(1)
 	}
 }

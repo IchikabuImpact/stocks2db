@@ -9,8 +9,30 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 )
+
+type FetchErrorKind string
+
+const (
+	FetchErrorAPI   FetchErrorKind = "api"
+	FetchErrorParse FetchErrorKind = "parse"
+)
+
+type FetchError struct {
+	Kind   FetchErrorKind
+	Ticker string
+	Err    error
+}
+
+func (e *FetchError) Error() string {
+	return fmt.Sprintf("fetch %s error for ticker %s: %v", e.Kind, e.Ticker, e.Err)
+}
+
+func (e *FetchError) Unwrap() error {
+	return e.Err
+}
 
 type PriceAPIFetcher struct {
 	baseURL string
@@ -25,7 +47,9 @@ type priceAPIResponse struct {
 func NewPriceAPIFetcher(baseURL string) *PriceAPIFetcher {
 	return &PriceAPIFetcher{
 		baseURL: strings.TrimRight(baseURL, "/"),
-		client:  &http.Client{},
+		client: &http.Client{
+			Timeout: 10 * time.Second,
+		},
 	}
 }
 
@@ -38,23 +62,23 @@ func (f *PriceAPIFetcher) FetchCurrentPrice(ctx context.Context, ticker string) 
 
 	resp, err := f.client.Do(req)
 	if err != nil {
-		return 0, fmt.Errorf("failed to call price api: %w", err)
+		return 0, &FetchError{Kind: FetchErrorAPI, Ticker: ticker, Err: fmt.Errorf("failed to call price api: %w", err)}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return 0, fmt.Errorf("price api returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return 0, &FetchError{Kind: FetchErrorAPI, Ticker: ticker, Err: fmt.Errorf("price api returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))}
 	}
 
 	var payload priceAPIResponse
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return 0, fmt.Errorf("failed to decode price api response: %w", err)
+		return 0, &FetchError{Kind: FetchErrorAPI, Ticker: ticker, Err: fmt.Errorf("failed to decode price api response: %w", err)}
 	}
 
 	price, err := ParsePrice(payload.CurrentPrice)
 	if err != nil {
-		return 0, fmt.Errorf("invalid currentPrice for ticker %s: %w", ticker, err)
+		return 0, &FetchError{Kind: FetchErrorParse, Ticker: ticker, Err: fmt.Errorf("invalid currentPrice: %w", err)}
 	}
 
 	return price, nil
